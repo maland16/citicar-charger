@@ -6,6 +6,11 @@
 #include <XPT2046_Touchscreen.h>
 #include <SPI.h> // For talking to the display/touchscreen
 
+// This developer option disables the charger/BMS query operations to make
+// it easier to develop without the charger or BMS
+#define DEV_MODE_NO_CHARGER true
+#define DEV_MODE_NO_BMS true
+
 #define MIN_PACK_TEMP_C 5 // We don't want to try to charge the batteries if the pack is too cold
 #define FULLY_CHARGED_VOLTAGE 58.5
 
@@ -17,8 +22,12 @@
 // Helper function prototypes
 void initDisplay(void);
 void initTouchscreen(void);
-void queryBMS(void);
-void queryCharger(void);
+bool queryBMS(void);
+bool queryCharger(void);
+
+void transitionToBMSError(void);
+void transitionToChargerError(void);
+void transitionToCharging(void);
 
 // Private types
 enum states
@@ -27,7 +36,15 @@ enum states
   CHARGING,
   FULLY_CHARGED,
   PACK_TEMP_TOO_LOW,
-  ERR
+  BMS_ERR,
+  CHARGER_ERR
+};
+
+enum charger_state
+{
+  CC = 0,
+  CV,
+  CHARGED
 };
 
 // Private member object declarations
@@ -42,11 +59,12 @@ uint8_t my_state = STARTUP;
 float pack_voltage = 0;
 float bms_current = 0;
 float SOC = 0;
-int8_t pack_temp = 0;
+int8_t pack_temp = 26; // Default pack temp to room temp
 // Data from charger
 float charger_vout = 0;
 uint16_t charger_vin = 0;
-uint16_t charger_current = 0;
+uint16_t charger_iout = 0;
+uint8_t charger_state = CC;
 
 void setup()
 {
@@ -57,7 +75,7 @@ void setup()
   // Initialize the peripheral devices
   initDisplay(); // Display first, so we can see something
   initTouchscreen();
-  charger.Init(0x47); // 0x47 = i2c address of charger, set using pins A0,A1,A2
+  charger.Init(0x47); // 0x47 = i2c address of charger, set using pins A0, A1, A2
   bms.Init();
 
   Serial.printf("<Citicar-charger DEBUG> Initialization complete!\n");
@@ -70,40 +88,91 @@ void loop()
   case (STARTUP):
   {
     // Pull values from the charger & bms. Make sure we can talk to them
+
     if (!queryBMS())
     {
-      state = ERR;
+      transitionToBMSError();
       break;
     }
 
     if (!queryCharger())
     {
-      state = ERR;
+      transitionToChargerError();
       break;
     }
 
     if (pack_temp <= MIN_PACK_TEMP_C)
     {
       // Too cold, we shouldn't start up the charger
-      state = PACK_TEMP_TOO_LOW;
+      my_state = PACK_TEMP_TOO_LOW;
       break;
     }
 
     if (pack_voltage >= FULLY_CHARGED_VOLTAGE)
     {
       // We're already charged! No point in starting the charger...
-      state = FULLY_CHARGED;
+      my_state = FULLY_CHARGED;
       break;
     }
+
+    transitionToCharging();
+    break;
 
     break;
   }
   case (CHARGING):
   {
+    if (!queryBMS())
+    {
+      transitionToBMSError();
+      break;
+    }
+
+    if (!queryCharger())
+    {
+      transitionToChargerError();
+      break;
+    }
+
+    // Charger info
+    tft.fillRect(0, 80, 49, 14, ILI9341_BLACK);    // Clear old vin
+    tft.fillRect(127, 80, 49, 14, ILI9341_BLACK);  // Clear old vout
+    tft.fillRect(127, 100, 49, 14, ILI9341_BLACK); // Clear old iout
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setFont(Arial_12);
+    tft.setCursor(5, 80);
+    tft.printf("%dV", charger_vin);
+    tft.setCursor(127, 80);
+    tft.printf("%4.2fV", charger_vout);
+    tft.setCursor(127, 103);
+    tft.printf("%dA", charger_iout);
+
+    tft.fillRect(55, 90, 30, 25, ILI9341_BLACK); // Clear old mode
+    tft.setCursor(55, 90);
+    tft.setFont(Arial_20);
+    if (charger_state == CC)
+    {
+      tft.print("CC");
+    }
+    else if (charger_state == CV)
+    {
+      tft.print("CV");
+    }
+
+    // Battery Info
+    tft.fillRect(215, 90, 55, 65, ILI9341_BLACK); // Clear old BMS values
+    tft.setFont(Arial_16);
+    tft.setCursor(215, 90);
+    tft.printf("%4.2fV", pack_voltage);
+    tft.setCursor(215, 110);
+    tft.printf("%4.2f%", SOC);
+    tft.setCursor(215, 130);
+    tft.printf("%4.2fC", pack_temp);
     break;
   }
   case (FULLY_CHARGED):
   {
+    tft.fillScreen(ILI9341_GREEN);
     break;
   }
   case (PACK_TEMP_TOO_LOW):
@@ -111,21 +180,43 @@ void loop()
     // Spin and wait for the pack to warm up I guess...
     if (!queryBMS())
     {
-      state = ERR;
+      transitionToBMSError();
     }
 
     if (pack_voltage > MIN_PACK_TEMP_C)
     {
-      state = STARTUP;
+      my_state = STARTUP;
     }
     break;
   }
-  case (ERR):
+  case (BMS_ERR):
   {
+    Serial.printf("<Citicar-charger DEBUG> Attempting to query BMS...\n");
+
     // Display an error message
+    if (queryBMS())
+    {
+      // We were able to communicate!
+      Serial.printf("<Citicar-charger DEBUG> Query BMS successful! Restarting...\n");
+      my_state = STARTUP;
+    }
+    break;
+  }
+  case (CHARGER_ERR):
+  {
+    Serial.printf("<Citicar-charger DEBUG> Attempting to query charger...\n");
+
+    // Display an error message
+    if (queryCharger())
+    {
+      // We were able to communicate!
+      Serial.printf("<Citicar-charger DEBUG> Query Charger successful! Restarting...\n");
+      my_state = STARTUP;
+    }
     break;
   }
   }
+  delay(500);
 }
 
 void initDisplay(void)
@@ -137,7 +228,7 @@ void initDisplay(void)
   tft.fillScreen(ILI9341_BLACK);
   tft.setTextColor(ILI9341_GREEN);
   tft.setFont(Arial_24);
-  tft.setCursor(100, 150);
+  tft.setCursor(70, 100);
   tft.print("Initializing...");
 }
 
@@ -150,10 +241,128 @@ void initTouchscreen(void)
 // Query the BMS and update all BMS-related variables
 bool queryBMS(void)
 {
-  return (bms.getPackMeasurements(pack_voltage, bms_current, SOC) && bms.getPackTemp(pack_temp));
+  if (DEV_MODE_NO_BMS)
+  {
+    return true;
+  }
+
+  return bms.getPackMeasurements(pack_voltage, bms_current, SOC) && bms.getPackTemp(pack_temp);
 }
 
 bool queryCharger(void)
 {
-  return true;
+  if (DEV_MODE_NO_CHARGER)
+  {
+    return true;
+  }
+
+  readings charger_readings{};
+  charge_status charger_status{};
+
+  if (charger.getReadings(&charger_readings) && charger.getChargeStatus(&charger_status))
+  {
+    charger_vout = charger_readings.v_out;
+    charger_vin = charger_readings.v_in;
+    charger_iout = charger_readings.i_out;
+
+    if (charger_status.in_cc_mode)
+    {
+      charger_state = CC;
+    }
+    else if (charger_status.in_cv_mode)
+    {
+      charger_state = CV;
+    }
+    else if (charger_status.fully_charged)
+    {
+      charger_state = CHARGED;
+    }
+
+    // Data collected successfully!
+    return true;
+  }
+  else
+  {
+    // At least one of our querys failed, return error
+    return false;
+  }
+}
+
+void transitionToBMSError(void)
+{
+  // Change the state
+  my_state = BMS_ERR;
+
+  // Print an error message
+  tft.fillRect(30, 50, 260, 80, ILI9341_RED);
+  tft.drawRect(30, 50, 260, 80, ILI9341_WHITE);
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setFont(Arial_18);
+  tft.setCursor(40, 65);
+  tft.print("Error communicating");
+  tft.setCursor(40, 95);
+  tft.print("with BMS! Retrying...");
+}
+
+void transitionToChargerError(void)
+{
+  // Change the state
+  my_state = CHARGER_ERR;
+
+  // Print an error message
+  tft.fillRect(20, 50, 285, 80, ILI9341_RED);
+  tft.drawRect(20, 50, 285, 80, ILI9341_WHITE);
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setFont(Arial_18);
+  tft.setCursor(40, 65);
+  tft.print("Error communicating");
+  tft.setCursor(25, 95);
+  tft.print("with Charger! Retrying...");
+}
+
+void transitionToCharging(void)
+{
+  my_state = CHARGING;
+
+  tft.fillScreen(ILI9341_BLACK);
+  tft.setFont(Arial_24);
+  tft.setTextColor(ILI9341_GREEN);
+
+  tft.setCursor(70, 10);
+  tft.print("CHARGING");
+
+  // Charger diagram
+  tft.drawRect(0, 95, 240, 5, ILI9341_WHITE);  // Wire
+  tft.fillRect(50, 65, 75, 55, ILI9341_BLACK); // Charger
+  tft.drawRect(50, 65, 75, 55, ILI9341_WHITE); // Charger
+  tft.drawRect(50, 85, 75, 35, ILI9341_WHITE); // Charger
+  tft.setFont(Arial_14);
+  tft.setCursor(52, 67);
+  tft.setTextColor(ILI9341_WHITE);
+  tft.print("Charger");
+
+  // Print battery
+  tft.fillRect(210, 60, 100, 100, ILI9341_BLACK);
+  tft.drawRect(210, 60, 100, 100, ILI9341_WHITE);
+  tft.drawRect(210, 85, 100, 75, ILI9341_WHITE);
+  tft.setFont(Arial_16);
+  tft.setCursor(215, 63);
+  tft.setTextColor(ILI9341_WHITE);
+  tft.print("Battery");
+
+  /*
+  tft.setCursor(185, 90);
+  tft.print("V:");
+  tft.setCursor(185, 110);
+  tft.print("SOC:");
+  tft.setCursor(185, 130);
+  tft.print("Temp:"); */
+
+  // Draw settings button
+  tft.fillRect(14, 165, 150, 60, ILI9341_YELLOW);
+  tft.drawRect(14, 165, 150, 60, ILI9341_RED);
+  tft.setFont(Arial_24);
+  tft.setTextColor(ILI9341_RED);
+  tft.setCursor(30, 180);
+  tft.print("Settings");
 }
