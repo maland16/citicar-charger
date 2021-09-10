@@ -6,8 +6,8 @@
 #include <XPT2046_Touchscreen.h>
 #include <SPI.h> // For talking to the display/touchscreen
 
-// This developer option disables the charger/BMS query operations to make
-// it easier to develop without the charger or BMS
+// These developer options disable the charger/BMS query operations to make
+// it easier to develop without the charger or BMS physically present
 #define DEV_MODE_NO_CHARGER true
 #define DEV_MODE_NO_BMS true
 
@@ -15,9 +15,49 @@
 #define FULLY_CHARGED_VOLTAGE 58.5
 
 // Pin definitions
+#define T_IRQ 2
 #define CS_PIN 8
 #define TFT_DC 9
 #define TFT_CS 10
+
+// The data from the touchscreen needs to be scaled to be checked against the positions on the tft.
+// These values define the bounds of the touchscreen
+#define TS_MINX 150
+#define TS_MINY 130
+#define TS_MAXX 3800
+#define TS_MAXY 4000
+
+// Private types
+enum states
+{
+  STARTUP = 0,
+  CHARGING,
+  FULLY_CHARGED,
+  PACK_TEMP_TOO_LOW,
+  BMS_ERR,
+  CHARGER_ERR,
+  CONFIGURATION
+};
+
+enum charger_state
+{
+  CC = 0,
+  CV,
+  CHARGED
+};
+
+enum buttons
+{
+  SETTINGS = 0
+};
+
+struct button_bounds
+{
+  uint8_t x;
+  uint8_t y;
+  uint8_t width;
+  uint8_t height;
+};
 
 // Helper function prototypes
 void initDisplay(void);
@@ -28,27 +68,11 @@ bool queryCharger(void);
 void transitionToBMSError(void);
 void transitionToChargerError(void);
 void transitionToCharging(void);
-
-// Private types
-enum states
-{
-  STARTUP = 0,
-  CHARGING,
-  FULLY_CHARGED,
-  PACK_TEMP_TOO_LOW,
-  BMS_ERR,
-  CHARGER_ERR
-};
-
-enum charger_state
-{
-  CC = 0,
-  CV,
-  CHARGED
-};
+void transitionToConfiguration(void);
+bool buttonPressed(button_bounds bounds);
 
 // Private member object declarations
-XPT2046_Touchscreen ts(CS_PIN);
+XPT2046_Touchscreen ts(CS_PIN, T_IRQ);
 ILI9341_t3 tft = ILI9341_t3(TFT_CS, TFT_DC);
 RPB_1600 charger;
 Daly_BMS_UART bms(Serial1);
@@ -65,6 +89,9 @@ float charger_vout = 0;
 uint16_t charger_vin = 0;
 uint16_t charger_iout = 0;
 uint8_t charger_state = CC;
+
+// Buttons
+button_bounds settings_button{14, 165, 150, 60};
 
 void setup()
 {
@@ -122,6 +149,7 @@ void loop()
   }
   case (CHARGING):
   {
+    // Query the BMS & Charger, jump states if those queries fail
     if (!queryBMS())
     {
       transitionToBMSError();
@@ -132,6 +160,11 @@ void loop()
     {
       transitionToChargerError();
       break;
+    }
+
+    if (ts.touched() && buttonPressed(settings_button))
+    {
+      transitionToConfiguration();
     }
 
     // Charger info
@@ -193,7 +226,6 @@ void loop()
   {
     Serial.printf("<Citicar-charger DEBUG> Attempting to query BMS...\n");
 
-    // Display an error message
     if (queryBMS())
     {
       // We were able to communicate!
@@ -206,7 +238,6 @@ void loop()
   {
     Serial.printf("<Citicar-charger DEBUG> Attempting to query charger...\n");
 
-    // Display an error message
     if (queryCharger())
     {
       // We were able to communicate!
@@ -215,10 +246,22 @@ void loop()
     }
     break;
   }
+  case (CONFIGURATION):
+  {
+
+    break;
   }
-  delay(500);
+  }
+  delay(250);
 }
 
+//-------------------------------------------------
+// Helper Function Definitions
+//-------------------------------------------------
+
+/**
+ * @brief Initialize the tft display, and print an init message
+ */
 void initDisplay(void)
 {
   tft.begin();
@@ -232,13 +275,19 @@ void initDisplay(void)
   tft.print("Initializing...");
 }
 
+/**
+ * @brief Initialize the touchscreen
+ */
 void initTouchscreen(void)
 {
   ts.begin();
+  // I'm not sure if this rotation is correct, but I'm in too deep to change it and face the ramifications
   ts.setRotation(1);
 }
 
-// Query the BMS and update all BMS-related variables
+/**
+ * @brief Queries the data from the Battery Management System
+ */
 bool queryBMS(void)
 {
   if (DEV_MODE_NO_BMS)
@@ -249,6 +298,9 @@ bool queryBMS(void)
   return bms.getPackMeasurements(pack_voltage, bms_current, SOC) && bms.getPackTemp(pack_temp);
 }
 
+/**
+ * @brief Queries the data from the charger
+ */
 bool queryCharger(void)
 {
   if (DEV_MODE_NO_CHARGER)
@@ -288,6 +340,10 @@ bool queryCharger(void)
   }
 }
 
+/**
+ * @brief Transitions to the BMS Error state
+ * @details Changes states & prints a message about the error
+ */
 void transitionToBMSError(void)
 {
   // Change the state
@@ -304,6 +360,10 @@ void transitionToBMSError(void)
   tft.print("with BMS! Retrying...");
 }
 
+/**
+ * @brief Transitions to the charger error state
+ * @details Changes states & prints a message about the error
+ */
 void transitionToChargerError(void)
 {
   // Change the state
@@ -320,6 +380,10 @@ void transitionToChargerError(void)
   tft.print("with Charger! Retrying...");
 }
 
+/**
+ * @brief Transition to the charing state
+ * @details clears the screen and prints all the pretty stuff on the "Charging" display
+ */
 void transitionToCharging(void)
 {
   my_state = CHARGING;
@@ -341,7 +405,7 @@ void transitionToCharging(void)
   tft.setTextColor(ILI9341_WHITE);
   tft.print("Charger");
 
-  // Print battery
+  // Print battery diagram
   tft.fillRect(210, 60, 100, 100, ILI9341_BLACK);
   tft.drawRect(210, 60, 100, 100, ILI9341_WHITE);
   tft.drawRect(210, 85, 100, 75, ILI9341_WHITE);
@@ -359,10 +423,35 @@ void transitionToCharging(void)
   tft.print("Temp:"); */
 
   // Draw settings button
-  tft.fillRect(14, 165, 150, 60, ILI9341_YELLOW);
-  tft.drawRect(14, 165, 150, 60, ILI9341_RED);
+  tft.fillRect(settings_button.x, settings_button.y, settings_button.width, settings_button.height, ILI9341_YELLOW);
+  tft.drawRect(settings_button.x, settings_button.y, settings_button.width, settings_button.height, ILI9341_RED);
   tft.setFont(Arial_24);
   tft.setTextColor(ILI9341_RED);
   tft.setCursor(30, 180);
   tft.print("Settings");
+}
+
+/**
+ * @brief Transition to the configuration state
+ */
+void transitionToConfiguration(void)
+{
+  my_state = CONFIGURATION;
+}
+
+/**
+ * @brief
+ */
+bool buttonPressed(button_bounds bounds)
+{
+  TS_Point p = ts.getPoint(); // Pull the location of the touch from the touchscreen
+
+  // Map the point given from the range of touchscreen values to the range of tft pixels
+  // Note the last two arguments, these are in this order to account for the fact that
+  // the touchscreen x & y and tft x & y axis are reversed, for some reason.
+  p.x = map(p.x, TS_MINX, TS_MAXX, tft.width(), 0);
+  p.y = map(p.y, TS_MINY, TS_MAXY, tft.height(), 0);
+
+  // Check the location of the touch against the bounds of the button
+  return (p.x > bounds.x) && (p.x < bounds.x + bounds.width) && (p.y > bounds.y) && (p.y < bounds.y + bounds.height);
 }
