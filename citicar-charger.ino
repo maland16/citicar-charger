@@ -46,6 +46,12 @@ enum charger_state
   CHARGED
 };
 
+enum charge_speed
+{
+  SLOW = 0,
+  FAST
+};
+
 enum buttons
 {
   SETTINGS = 0
@@ -89,9 +95,19 @@ float charger_vout = 0;
 uint16_t charger_vin = 0;
 uint16_t charger_iout = 0;
 uint8_t charger_state = CC;
+uint8_t charging_speed = SLOW;
+uint8_t charging_limit_percentage = 60;
 
-// Buttons
+// Button boundaries. Used to draw buttons and check if touches are within the button bounds
 button_bounds settings_button{14, 165, 150, 60};
+
+button_bounds limit_sixty_button{30, 60, 100, 50};
+button_bounds limit_eighty_button{30, 110, 100, 50};
+button_bounds limit_ninety_button{30, 160, 100, 50};
+
+button_bounds speed_slow_button{170, 60, 100, 50};
+button_bounds speed_fast_button{170, 110, 100, 50};
+button_bounds exit_config_button{160, 175, 120, 50};
 
 void setup()
 {
@@ -165,6 +181,7 @@ void loop()
     if (ts.touched() && buttonPressed(settings_button))
     {
       transitionToConfiguration();
+      break;
     }
 
     // Charger info
@@ -214,6 +231,7 @@ void loop()
     if (!queryBMS())
     {
       transitionToBMSError();
+      break;
     }
 
     if (pack_voltage > MIN_PACK_TEMP_C)
@@ -248,9 +266,40 @@ void loop()
   }
   case (CONFIGURATION):
   {
+    if (ts.touched())
+    {
+      if (buttonPressed(limit_sixty_button))
+      {
+        charging_limit_percentage = 60;
+      }
+      else if (buttonPressed(limit_eighty_button))
+      {
+        charging_limit_percentage = 80;
+      }
+      else if (buttonPressed(limit_ninety_button))
+      {
+        charging_limit_percentage = 90;
+      }
+      else if (buttonPressed(speed_slow_button))
+      {
+        charging_speed = SLOW;
+      }
+      else if (buttonPressed(speed_fast_button))
+      {
+        charging_speed = FAST;
+      }
+      else if (buttonPressed(exit_config_button))
+      {
+        transitionToCharging();
+        break;
+      }
 
+      transitionToConfiguration();
+    }
     break;
   }
+  default:
+    break;
   }
   delay(250);
 }
@@ -436,11 +485,102 @@ void transitionToCharging(void)
  */
 void transitionToConfiguration(void)
 {
-  my_state = CONFIGURATION;
+
+  // Pull the charging curve configuration from the charger
+
+  // Wipe the screen if we aren't coming from the configuration state
+  if (my_state != CONFIGURATION)
+  {
+    my_state = CONFIGURATION;
+    tft.fillScreen(ILI9341_BLACK);
+  }
+
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setFont(Arial_18);
+  tft.setCursor(60, 20);
+  tft.print("limit           speed");
+
+  // *** Charging limit buttons *** //
+
+  uint16_t limit_sixty_color = ILI9341_YELLOW, limit_eighty_color = ILI9341_YELLOW, limit_ninety_color = ILI9341_YELLOW;
+
+  // Color the button that corresponds to the configured charging limit
+  if (charging_limit_percentage == 60)
+  {
+    limit_sixty_color = ILI9341_GREEN;
+  }
+  else if (charging_limit_percentage == 80)
+  {
+    limit_eighty_color = ILI9341_GREEN;
+  }
+  else if (charging_limit_percentage == 90)
+  {
+    limit_ninety_color = ILI9341_GREEN;
+  }
+
+  tft.fillRect(limit_sixty_button.x, limit_sixty_button.y, limit_sixty_button.width, limit_sixty_button.height, limit_sixty_color);
+  tft.fillRect(limit_eighty_button.x, limit_eighty_button.y, limit_eighty_button.width, limit_eighty_button.height, limit_eighty_color);
+  tft.fillRect(limit_ninety_button.x, limit_ninety_button.y, limit_ninety_button.width, limit_ninety_button.height, limit_ninety_color);
+
+  tft.drawRect(limit_sixty_button.x, limit_sixty_button.y, limit_sixty_button.width, limit_sixty_button.height, ILI9341_BLUE);
+  tft.drawRect(limit_eighty_button.x, limit_eighty_button.y, limit_eighty_button.width, limit_eighty_button.height, ILI9341_BLUE);
+  tft.drawRect(limit_ninety_button.x, limit_ninety_button.y, limit_ninety_button.width, limit_ninety_button.height, ILI9341_BLUE);
+
+  tft.setTextColor(ILI9341_BLACK);
+
+  tft.setCursor(60, 75);
+  tft.print("60%");
+  tft.setCursor(60, 75 + 50);
+  tft.print("80%");
+  tft.setCursor(60, 75 + 50 + 50);
+  tft.print("90%");
+
+  // *** Charging speed buttons *** //
+
+  uint16_t speed_fast_color = ILI9341_YELLOW,
+           speed_slow_color = ILI9341_YELLOW;
+
+  // Color the button that corresponds to the configured charging speed
+  switch (charging_speed)
+  {
+  case (SLOW):
+    speed_slow_color = ILI9341_GREEN;
+    break;
+  case (FAST):
+    speed_fast_color = ILI9341_GREEN;
+    break;
+  default:
+    break;
+  }
+
+  tft.fillRect(speed_slow_button.x, speed_slow_button.y, speed_slow_button.width, speed_slow_button.height, speed_slow_color);
+  tft.fillRect(speed_fast_button.x, speed_fast_button.y, speed_fast_button.width, speed_fast_button.height, speed_fast_color);
+
+  tft.drawRect(speed_slow_button.x, speed_slow_button.y, speed_slow_button.width, speed_slow_button.height, ILI9341_BLUE);
+  tft.drawRect(speed_fast_button.x, speed_fast_button.y, speed_fast_button.width, speed_fast_button.height, ILI9341_BLUE);
+
+  tft.setTextColor(ILI9341_BLACK);
+
+  tft.setCursor(195, 75);
+  tft.print("slow");
+  tft.setCursor(200, 75 + 50);
+  tft.print("fast");
+
+  // *** Exit button *** //
+
+  tft.fillRect(exit_config_button.x, exit_config_button.y, exit_config_button.width, exit_config_button.height, ILI9341_ORANGE);
+  tft.drawRect(exit_config_button.x, exit_config_button.y, exit_config_button.width, exit_config_button.height, ILI9341_WHITE);
+
+  tft.setTextColor(ILI9341_BLACK);
+
+  tft.setFont(Arial_20);
+  tft.setCursor(185, 185);
+  tft.print("EXIT");
 }
 
 /**
- * @brief
+ * @brief Helper for detecting button presses
+ * @returns true if the last touch was within the bounds of the given button, false otherwise
  */
 bool buttonPressed(button_bounds bounds)
 {
