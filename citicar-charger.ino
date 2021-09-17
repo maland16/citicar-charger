@@ -75,6 +75,7 @@ void transitionToBMSError(void);
 void transitionToChargerError(void);
 void transitionToCharging(void);
 void transitionToConfiguration(void);
+void writeChargerConfiguration(void);
 bool buttonPressed(button_bounds bounds);
 
 // Private member object declarations
@@ -266,8 +267,9 @@ void loop()
   }
   case (CONFIGURATION):
   {
-    if (ts.touched())
+    if (ts.touched()) // If we detect a touch
     {
+      // Based on which button was pressed, change the appropriate value
       if (buttonPressed(limit_sixty_button))
       {
         charging_limit_percentage = 60;
@@ -291,9 +293,17 @@ void loop()
       else if (buttonPressed(exit_config_button))
       {
         transitionToCharging();
+
+        // We don't need to write any data to the charger here, so just exit
         break;
       }
 
+      // Write the updated configuration to the charger
+      writeChargerConfiguration();
+
+      // We call transitionToConfiguration() here to pull the up-to date data from the
+      // charger, and re-draw the screen with the appropriate button highlighted. This
+      // ensures that the screen reflects what's written to the charger's EEPROM.
       transitionToConfiguration();
     }
     break;
@@ -481,12 +491,47 @@ void transitionToCharging(void)
 }
 
 /**
- * @brief Transition to the configuration state
+ * @brief Transition to the configuration state, doing all of the things
+ * @details This function does the following:
+ *            - Pull configuration data from the charger
+ *            - Parse that data to global variables
+ *            - Clear the screen
+ *            - Draw buttons based on charger config. data
  */
 void transitionToConfiguration(void)
 {
-
   // Pull the charging curve configuration from the charger
+  curve_parameters curveInfo{};
+
+  if (!charger.getCurveParams(&curveInfo))
+  {
+    Serial.printf("<Citicar-charger DEBUG> Failed to read curve config!\n");
+    transitionToChargerError();
+    return;
+  }
+
+  // Parse out the curve data
+  if (curve_parameters.cv == 60)
+  {
+    charging_limit_percentage = 60;
+  }
+  else if (curve_parameters.cv == 80)
+  {
+    charging_limit_percentage = 80;
+  }
+  if (curve_parameters.cv == 90)
+  {
+    charging_limit_percentage = 90;
+  }
+
+  if (curve_parameters.cc == 5)
+  {
+    charge_speed = SLOW;
+  }
+  else
+  {
+    charge_speed = FAST;
+  }
 
   // Wipe the screen if we aren't coming from the configuration state
   if (my_state != CONFIGURATION)
@@ -500,7 +545,7 @@ void transitionToConfiguration(void)
   tft.setCursor(60, 20);
   tft.print("limit           speed");
 
-  // *** Charging limit buttons *** //
+  // *** Draw Charging limit buttons *** //
 
   uint16_t limit_sixty_color = ILI9341_YELLOW, limit_eighty_color = ILI9341_YELLOW, limit_ninety_color = ILI9341_YELLOW;
 
@@ -535,7 +580,7 @@ void transitionToConfiguration(void)
   tft.setCursor(60, 75 + 50 + 50);
   tft.print("90%");
 
-  // *** Charging speed buttons *** //
+  // *** Draw Charging speed buttons *** //
 
   uint16_t speed_fast_color = ILI9341_YELLOW,
            speed_slow_color = ILI9341_YELLOW;
@@ -576,6 +621,18 @@ void transitionToConfiguration(void)
   tft.setFont(Arial_20);
   tft.setCursor(185, 185);
   tft.print("EXIT");
+}
+
+/**
+ * @brief Write our configuration to the charger
+ * @details Writes the Constant Current & Constant Current settings to the charger
+ */
+void writeChargerConfiguration(void)
+{
+  // Likely
+  // charger.writeLinearDataCommand(cmd,N,value)
+  // Possibly
+  // charger.writeTwoBytes(cmd,data)
 }
 
 /**
