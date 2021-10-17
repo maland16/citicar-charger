@@ -8,7 +8,7 @@
 
 // These developer options disable the charger/BMS query operations to make
 // it easier to develop without the charger or BMS physically present
-#define DEV_MODE_NO_CHARGER true
+#define DEV_MODE_NO_CHARGER false
 #define DEV_MODE_NO_BMS true
 
 #define MIN_PACK_TEMP_C 5 // We don't want to try to charge the batteries if the pack is too cold
@@ -511,26 +511,26 @@ void transitionToConfiguration(void)
   }
 
   // Parse out the curve data
-  if (curve_parameters.cv == 60)
+  if (curveInfo.cv == 60)
   {
     charging_limit_percentage = 60;
   }
-  else if (curve_parameters.cv == 80)
+  else if (curveInfo.cv == 80)
   {
     charging_limit_percentage = 80;
   }
-  if (curve_parameters.cv == 90)
+  if (curveInfo.cv == 90)
   {
     charging_limit_percentage = 90;
   }
 
-  if (curve_parameters.cc == 5)
+  if (curveInfo.cc == 5)
   {
-    charge_speed = SLOW;
+    charging_speed = SLOW;
   }
   else
   {
-    charge_speed = FAST;
+    charging_speed = FAST;
   }
 
   // Wipe the screen if we aren't coming from the configuration state
