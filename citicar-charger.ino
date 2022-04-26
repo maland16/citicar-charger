@@ -14,6 +14,10 @@
 #define MIN_PACK_TEMP_C 5 // We don't want to try to charge the batteries if the pack is too cold
 #define FULLY_CHARGED_VOLTAGE 58.5
 
+// Defines for "Fast" and "Slow" charging speeds in amps
+#define FAST_CHARGING_SPEED_AMPS (27)
+#define SLOW_CHARGING_SPEED_AMPS (6)
+
 // Pin definitions
 #define T_IRQ 2
 #define CS_PIN 8
@@ -160,8 +164,6 @@ void loop()
     }
 
     transitionToCharging();
-    break;
-
     break;
   }
   case (CHARGING):
@@ -510,6 +512,10 @@ void transitionToConfiguration(void)
     return;
   }
 
+  Serial.printf("<Citicar-charger DEBUG> ----- Curve Info: ----- \n");
+  Serial.printf("<Citicar-charger DEBUG> Constant Voltage Setpoint: %4.2fV\n", curveInfo.cv);
+  Serial.printf("<Citicar-charger DEBUG> Constant Current Setpoint: %dA\n", curveInfo.cc);
+
   // Parse out the curve data
   if (curveInfo.cv == 60)
   {
@@ -519,12 +525,12 @@ void transitionToConfiguration(void)
   {
     charging_limit_percentage = 80;
   }
-  if (curveInfo.cv == 90)
+  else if (curveInfo.cv == 90)
   {
     charging_limit_percentage = 90;
   }
 
-  if (curveInfo.cc == 5)
+  if (curveInfo.cc == SLOW_CHARGING_SPEED_AMPS)
   {
     charging_speed = SLOW;
   }
@@ -563,6 +569,7 @@ void transitionToConfiguration(void)
     limit_ninety_color = ILI9341_GREEN;
   }
 
+  // Draw the buttons accordingly
   tft.fillRect(limit_sixty_button.x, limit_sixty_button.y, limit_sixty_button.width, limit_sixty_button.height, limit_sixty_color);
   tft.fillRect(limit_eighty_button.x, limit_eighty_button.y, limit_eighty_button.width, limit_eighty_button.height, limit_eighty_color);
   tft.fillRect(limit_ninety_button.x, limit_ninety_button.y, limit_ninety_button.width, limit_ninety_button.height, limit_ninety_color);
@@ -571,8 +578,8 @@ void transitionToConfiguration(void)
   tft.drawRect(limit_eighty_button.x, limit_eighty_button.y, limit_eighty_button.width, limit_eighty_button.height, ILI9341_BLUE);
   tft.drawRect(limit_ninety_button.x, limit_ninety_button.y, limit_ninety_button.width, limit_ninety_button.height, ILI9341_BLUE);
 
+  // Label the buttons
   tft.setTextColor(ILI9341_BLACK);
-
   tft.setCursor(60, 75);
   tft.print("60%");
   tft.setCursor(60, 75 + 50);
@@ -598,14 +605,15 @@ void transitionToConfiguration(void)
     break;
   }
 
+  // Draw the charging speed buttons
   tft.fillRect(speed_slow_button.x, speed_slow_button.y, speed_slow_button.width, speed_slow_button.height, speed_slow_color);
   tft.fillRect(speed_fast_button.x, speed_fast_button.y, speed_fast_button.width, speed_fast_button.height, speed_fast_color);
 
   tft.drawRect(speed_slow_button.x, speed_slow_button.y, speed_slow_button.width, speed_slow_button.height, ILI9341_BLUE);
   tft.drawRect(speed_fast_button.x, speed_fast_button.y, speed_fast_button.width, speed_fast_button.height, ILI9341_BLUE);
 
+  // Label the charging speed buttons
   tft.setTextColor(ILI9341_BLACK);
-
   tft.setCursor(195, 75);
   tft.print("slow");
   tft.setCursor(200, 75 + 50);
@@ -629,10 +637,24 @@ void transitionToConfiguration(void)
  */
 void writeChargerConfiguration(void)
 {
-  // Likely
-  // charger.writeLinearDataCommand(cmd,N,value)
-  // Possibly
-  // charger.writeTwoBytes(cmd,data)
+  uint8_t cmd = CMD_CODE_CURVE_CC;
+  uint8_t N = CMD_N_VALUE_CURVE_CC;
+  uint16_t value = 0x0000;
+
+  switch (charging_speed)
+  {
+  case (SLOW):
+    value = SLOW_CHARGING_SPEED_AMPS;
+    break;
+  case (FAST):
+    value = FAST_CHARGING_SPEED_AMPS;
+    break;
+  default:
+    // In this case value is left at 0 and charging speed is reduced to minimum
+    break;
+  }
+
+  charger.writeLinearDataCommand(cmd, N, value);
 }
 
 /**
